@@ -1,0 +1,7 @@
+RUN100BHDR|seat=ACER-CLAUDE-FABLE5|pid=8467a937cba309f7|ts=2026-07-04T23:45:00Z|orchestrator=1|child_spawns=0|json=0
+MEASURED|processed=100000000000|secs=242.08|rate_per_s=413085673|rate_Mps=413.09|gc_every=2000|gulps=50000000|json=0
+MEASURED|genius=5497148|mistake=2202876|minted_patterns=512|json=0
+HISTMATCH|hist_genius_2026-05-26=5500447|this=5497148|delta_pct=0.06|hist_mistake=2202884|this=2202876|reproduces=1|json=0
+BRAIN|module=hopfield_recall|recall_from_half_cue=ok|confidence=1.000|json=0
+STANDINGORDER|child_spawns=0|orchestrator_wrote_driver|compute_ran_it|no_agent_storm|lazy_formula_PID_no_premint_files|json=0
+BOUNDARY|MEASURED_single_machine|reproduces_historical_100B_rates|Shannon_intact|json=0
