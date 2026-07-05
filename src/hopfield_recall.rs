@@ -467,7 +467,13 @@ impl HopfieldMemory {
     /// in ~1 step for well-separated patterns; a metastable settle shows up as extra
     /// steps and a small margin in the result. Snaps to the argmax stored row at the
     /// end.
-    pub fn recall_iter(&self, cue: &[f32], beta: f32, eps: f32, max_steps: usize) -> Option<Recall> {
+    pub fn recall_iter(
+        &self,
+        cue: &[f32],
+        beta: f32,
+        eps: f32,
+        max_steps: usize,
+    ) -> Option<Recall> {
         if self.is_empty() || cue.len() != self.dim {
             return None;
         }
@@ -634,7 +640,10 @@ mod tests {
         }
         fn next_f32(&mut self) -> f32 {
             // Numerical Recipes LCG constants.
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let x = (self.0 >> 33) as u32; // top bits
             (x as f32 / u32::MAX as f32) * 2.0 - 1.0 // ~uniform in [-1, 1)
         }
@@ -762,7 +771,7 @@ mod tests {
         let mut energies = vec![mem.energy(&xi, beta)];
         for _ in 0..10 {
             let r = mem.recall(&xi, beta).unwrap(); // one step
-            // advance along the mixture (soft update), not the hard snap
+                                                    // advance along the mixture (soft update), not the hard snap
             xi = r.mixture.clone();
             energies.push(mem.energy(&xi, beta));
         }

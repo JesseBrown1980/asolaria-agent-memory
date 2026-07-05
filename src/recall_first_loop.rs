@@ -108,8 +108,7 @@ mod sha256 {
                 ]);
             }
             for i in 16..64 {
-                let s0 =
-                    w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
                 let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
                 w[i] = w[i - 16]
                     .wrapping_add(s0)

@@ -1,0 +1,8 @@
+/.gitattributes text eol=lf
+*.rs text eol=lf
+Cargo.toml text eol=lf
+README.md text eol=lf
+ORCHESTRATOR-LAW.md text eol=lf
+*.hbp text eol=lf
+*.hbi text eol=lf
+*.sha256 text eol=lf

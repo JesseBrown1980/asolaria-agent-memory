@@ -90,12 +90,8 @@ mod sha256 {
                 *wi = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
             }
             for i in 16..64 {
-                let s0 = w[i - 15].rotate_right(7)
-                    ^ w[i - 15].rotate_right(18)
-                    ^ (w[i - 15] >> 3);
-                let s1 = w[i - 2].rotate_right(17)
-                    ^ w[i - 2].rotate_right(19)
-                    ^ (w[i - 2] >> 10);
+                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+                let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
                 w[i] = w[i - 16]
                     .wrapping_add(s0)
                     .wrapping_add(w[i - 7])
@@ -241,7 +237,9 @@ impl RateCfg {
             return Err(RouterError::BadRate("worker_hz == 0"));
         }
         if self.worker_hz < self.planner_hz {
-            return Err(RouterError::BadRate("worker_hz < planner_hz (fast lane not faster)"));
+            return Err(RouterError::BadRate(
+                "worker_hz < planner_hz (fast lane not faster)",
+            ));
         }
         if self.horizon == 0 {
             return Err(RouterError::BadRate("horizon == 0"));
@@ -742,8 +740,7 @@ impl DualRouter {
                     WorkerStep::Hold(reason)
                 } else {
                     let actions = worker.act(now, &latent, state, self.cfg.horizon);
-                    let chunk =
-                        Chunk::new(now, latent.seq(), latent.lid(), age, actions);
+                    let chunk = Chunk::new(now, latent.seq(), latent.lid(), age, actions);
                     self.receipts.push(hbp_worker_row(&chunk));
                     WorkerStep::Drive(chunk)
                 }
@@ -875,14 +872,20 @@ mod tests {
             }
         }
         assert!(drove >= 1, "should have driven at least one fresh chunk");
-        assert!(stale_hit, "the Hold gate must eventually fire on a stale seam");
+        assert!(
+            stale_hit,
+            "the Hold gate must eventually fire on a stale seam"
+        );
 
         // Every emitted receipt is a hot-path row ending |json=0, with NO JSON braces.
         assert!(!router.receipts().is_empty());
         for row in router.receipts() {
             assert!(row.ends_with("|json=0"), "row not hot-path: {row}");
             assert!(row.starts_with("DSR|role="), "row not a DSR row: {row}");
-            assert!(!row.contains('{') && !row.contains('}'), "JSON leaked: {row}");
+            assert!(
+                !row.contains('{') && !row.contains('}'),
+                "JSON leaked: {row}"
+            );
         }
         // Exactly one Hold(stale) receipt was recorded (refusals are auditable, not silent).
         let stale_rows = router
@@ -923,7 +926,11 @@ mod tests {
         let z1 = router
             .planner_publish(&mut planner, &[0.0, 1.0], &[0.0, 1.0])
             .unwrap();
-        assert_ne!(z0.lid(), z1.lid(), "distinct goals must yield distinct lids");
+        assert_ne!(
+            z0.lid(),
+            z1.lid(),
+            "distinct goals must yield distinct lids"
+        );
         assert_eq!(z1.seq(), z0.seq() + 1);
 
         // Next worker tick now drives the NEW latent, and age resets (published this tick range).
@@ -947,12 +954,21 @@ mod tests {
         let planner_row = hbp_planner_row(7, &lid, 32, 10);
         assert_eq!(
             planner_row,
-            format!("DSR|role=planner|seq=7|lid={}|dim=32|hz=10|json=0", hex16(&lid))
+            format!(
+                "DSR|role=planner|seq=7|lid={}|dim=32|hz=10|json=0",
+                hex16(&lid)
+            )
         );
 
         let hold_no = hbp_hold_row(3, &HoldReason::NoSeam);
         assert_eq!(hold_no, "DSR|role=worker|tick=3|hold=no_seam|json=0");
-        let hold_stale = hbp_hold_row(9, &HoldReason::Stale { age_ticks: 12, bound: 5 });
+        let hold_stale = hbp_hold_row(
+            9,
+            &HoldReason::Stale {
+                age_ticks: 12,
+                bound: 5,
+            },
+        );
         assert_eq!(
             hold_stale,
             "DSR|role=worker|tick=9|hold=stale|age_ticks=12|bound=5|json=0"

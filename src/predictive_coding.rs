@@ -179,7 +179,10 @@ impl PcNet {
     /// If `sizes.len() < 2`, any size is `0`, or
     /// `precisions.len() != sizes.len()-1`.
     pub fn new(sizes: Vec<usize>, precisions: Vec<f64>, cfg: PcConfig, seed: u64) -> Self {
-        assert!(sizes.len() >= 2, "need at least an input and one latent layer");
+        assert!(
+            sizes.len() >= 2,
+            "need at least an input and one latent layer"
+        );
         assert!(sizes.iter().all(|&s| s > 0), "layer sizes must be non-zero");
         assert_eq!(
             precisions.len(),
@@ -739,7 +742,10 @@ mod tests {
         assert!(row.starts_with("PC|layers=1|"), "row: {}", row);
         assert!(row.ends_with("|json=0"), "row: {}", row);
         assert!(row.contains("|sha16="), "row: {}", row);
-        assert!(!row.contains('{') && !row.contains('}'), "no JSON on hot path");
+        assert!(
+            !row.contains('{') && !row.contains('}'),
+            "no JSON on hot path"
+        );
     }
 
     /// Nonlinear regime opt-in still runs and the energy is finite (smoke test;

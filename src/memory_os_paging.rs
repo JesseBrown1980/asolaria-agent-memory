@@ -73,7 +73,8 @@ const SHA256_K: [u32; 64] = [
 /// Verified against FIPS 180-4 known-answer vectors in the test module.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
 
     // Padding: append 0x80, zero-pad to 56 mod 64, then 64-bit big-endian bitlen.
@@ -289,7 +290,7 @@ pub struct MemoryPager {
     tau_hi: f64,
     tau_lo: f64,
 
-    hot: VecDeque<HotEntry>,       // arrival order (front = oldest)
+    hot: VecDeque<HotEntry>, // arrival order (front = oldest)
     hot_bytes: HashMap<Sha16, Vec<u8>>,
     store: HashMap<Sha16, Vec<u8>>, // cold, unbounded, retained (also holds pinned digest cubes)
     usage: usize,                   // bytes currently in the hot set
@@ -369,11 +370,27 @@ impl MemoryPager {
         let blen = bytes.len().to_string();
 
         if self.hot_bytes.contains_key(&id) {
-            self.emit("insert", &[("sha16", &hex), ("bytes", &blen), ("dedup", "1"), ("loc", "hot")]);
+            self.emit(
+                "insert",
+                &[
+                    ("sha16", &hex),
+                    ("bytes", &blen),
+                    ("dedup", "1"),
+                    ("loc", "hot"),
+                ],
+            );
             return InsertOutcome::Deduped(id);
         }
         if self.store.contains_key(&id) {
-            self.emit("insert", &[("sha16", &hex), ("bytes", &blen), ("dedup", "1"), ("loc", "cold")]);
+            self.emit(
+                "insert",
+                &[
+                    ("sha16", &hex),
+                    ("bytes", &blen),
+                    ("dedup", "1"),
+                    ("loc", "cold"),
+                ],
+            );
             return InsertOutcome::Deduped(id);
         }
 
@@ -381,17 +398,27 @@ impl MemoryPager {
             // Oversize: retain full entropy cold, but never admit to hot (avoids
             // a flush that could never reach tau_lo). Reads are pass-through.
             self.store.insert(id, bytes.to_vec());
-            self.emit("hold", &[("reason", "oversize"), ("sha16", &hex), ("bytes", &blen)]);
+            self.emit(
+                "hold",
+                &[("reason", "oversize"), ("sha16", &hex), ("bytes", &blen)],
+            );
             return InsertOutcome::Held(id);
         }
 
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.hot.push_back(HotEntry { id, seq, bytes: bytes.len() });
+        self.hot.push_back(HotEntry {
+            id,
+            seq,
+            bytes: bytes.len(),
+        });
         self.hot_bytes.insert(id, bytes.to_vec());
         self.usage += bytes.len();
         let seqs = seq.to_string();
-        self.emit("insert", &[("sha16", &hex), ("bytes", &blen), ("seq", &seqs)]);
+        self.emit(
+            "insert",
+            &[("sha16", &hex), ("bytes", &blen), ("seq", &seqs)],
+        );
 
         self.maybe_flush(Some(id));
         InsertOutcome::Stored(id)
@@ -426,23 +453,36 @@ impl MemoryPager {
         let recomputed = Sha16::of(&cold);
         if recomputed != *id {
             let got = recomputed.to_hex();
-            self.emit("hold", &[("reason", "hash_mismatch"), ("sha16", &hex), ("got", &got)]);
+            self.emit(
+                "hold",
+                &[("reason", "hash_mismatch"), ("sha16", &hex), ("got", &got)],
+            );
             return Recall::Corrupt;
         }
 
         if !self.hot_eligible(cold.len()) {
             let clen = cold.len().to_string();
-            self.emit("recall", &[("sha16", &hex), ("mode", "passthrough"), ("bytes", &clen)]);
+            self.emit(
+                "recall",
+                &[("sha16", &hex), ("mode", "passthrough"), ("bytes", &clen)],
+            );
             return Recall::PagedIn(cold);
         }
 
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.hot.push_back(HotEntry { id: *id, seq, bytes: cold.len() });
+        self.hot.push_back(HotEntry {
+            id: *id,
+            seq,
+            bytes: cold.len(),
+        });
         self.hot_bytes.insert(*id, cold.clone());
         self.usage += cold.len();
         let seqs = seq.to_string();
-        self.emit("recall", &[("sha16", &hex), ("mode", "pagein"), ("seq", &seqs)]);
+        self.emit(
+            "recall",
+            &[("sha16", &hex), ("mode", "pagein"), ("seq", &seqs)],
+        );
 
         self.maybe_flush(Some(*id));
         Recall::PagedIn(cold)
@@ -481,7 +521,10 @@ impl MemoryPager {
             let ehex = entry.id.to_hex();
             let ebytes = entry.bytes.to_string();
             let eseq = entry.seq.to_string();
-            self.emit("evict", &[("sha16", &ehex), ("bytes", &ebytes), ("seq", &eseq)]);
+            self.emit(
+                "evict",
+                &[("sha16", &ehex), ("bytes", &ebytes), ("seq", &eseq)],
+            );
             count += 1;
         }
 
@@ -516,7 +559,10 @@ impl MemoryPager {
 
         let dhex = did.to_hex();
         let covers = evicted.len().to_string();
-        self.emit("digest", &[("sha16", &dhex), ("covers", &covers), ("prev", &prev_hex)]);
+        self.emit(
+            "digest",
+            &[("sha16", &dhex), ("covers", &covers), ("prev", &prev_hex)],
+        );
     }
 
     /// Re-derive every digest from its recorded `prev + covers` and confirm the
@@ -729,7 +775,11 @@ mod tests {
 
         // FULL ENTROPY RETAINED: every id is still findable (hot or cold).
         for id in &ids {
-            assert!(p.contains(id), "evict must MOVE, never drop: {}", id.to_hex());
+            assert!(
+                p.contains(id),
+                "evict must MOVE, never drop: {}",
+                id.to_hex()
+            );
         }
 
         // Find an id that was demoted to cold, then demand-recall it.
@@ -776,15 +826,26 @@ mod tests {
         let rows = p.hbp_rows();
         assert!(!rows.is_empty(), "insert must journal at least one row");
         for r in &rows {
-            assert!(r.starts_with("MEMPAGE|op="), "row must be a MEMPAGE tuple: {}", r);
-            assert!(r.ends_with("|json=0"), "hot-path row must end |json=0: {}", r);
+            assert!(
+                r.starts_with("MEMPAGE|op="),
+                "row must be a MEMPAGE tuple: {}",
+                r
+            );
+            assert!(
+                r.ends_with("|json=0"),
+                "hot-path row must end |json=0: {}",
+                r
+            );
             assert!(!r.contains('{'), "no JSON on the hot path: {}", r);
         }
         // Draining empties the bounded journal.
         assert_eq!(p.journal_len(), 0);
         // Standalone builder contract.
         let manual = hbp_row("evict", &[("sha16", "deadbeefdeadbeef"), ("bytes", "42")]);
-        assert_eq!(manual, "MEMPAGE|op=evict|sha16=deadbeefdeadbeef|bytes=42|json=0");
+        assert_eq!(
+            manual,
+            "MEMPAGE|op=evict|sha16=deadbeefdeadbeef|bytes=42|json=0"
+        );
     }
 
     /// Recover-or-Hold: a cold cube whose bytes no longer hash to its id is
@@ -798,7 +859,10 @@ mod tests {
         let _id2 = p.insert(&vec![2u8; 30]).id();
         // id0 should be the oldest and demoted to cold.
         assert!(!p.is_hot(&id0), "oldest item should have been evicted");
-        assert!(p.tamper_cold_for_test(&id0, vec![9u8; 30]), "tamper must land on a cold id");
+        assert!(
+            p.tamper_cold_for_test(&id0, vec![9u8; 30]),
+            "tamper must land on a cold id"
+        );
         match p.get(&id0) {
             Recall::Corrupt => {}
             other => panic!("tampered cube must be Held/Corrupt, got {:?}", other),
@@ -817,11 +881,17 @@ mod tests {
             other => panic!("oversize must be Held, got {:?}", other),
         };
         assert!(!p.is_hot(&id), "oversize never enters the hot set");
-        assert!(p.contains(&id), "oversize is still retained cold (entropy kept)");
+        assert!(
+            p.contains(&id),
+            "oversize is still retained cold (entropy kept)"
+        );
         match p.get(&id) {
             Recall::PagedIn(bytes) => {
                 assert_eq!(bytes, big, "pass-through read returns exact bytes");
-                assert!(!p.is_hot(&id), "pass-through must NOT admit oversize to hot");
+                assert!(
+                    !p.is_hot(&id),
+                    "pass-through must NOT admit oversize to hot"
+                );
             }
             other => panic!("expected pass-through PagedIn, got {:?}", other),
         }
@@ -845,12 +915,18 @@ mod tests {
 
         // Corrupt on disk -> verified read must reject (recover-or-Hold).
         fs::write(&path, b"tampered").expect("overwrite");
-        assert!(read_cube_verified(&path, &id).is_err(), "tampered cube must be rejected");
+        assert!(
+            read_cube_verified(&path, &id).is_err(),
+            "tampered cube must be rejected"
+        );
 
         // Wrong-id read of a good cube is also rejected.
         let other = Sha16::of(b"different");
         let good = write_cube_atomic(&dir, &id, bytes).expect("rewrite");
-        assert!(read_cube_verified(&good, &other).is_err(), "wrong-id must be rejected");
+        assert!(
+            read_cube_verified(&good, &other).is_err(),
+            "wrong-id must be rejected"
+        );
 
         let _ = fs::remove_dir_all(&dir); // best-effort cleanup
     }

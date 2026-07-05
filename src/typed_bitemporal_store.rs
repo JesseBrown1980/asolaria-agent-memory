@@ -59,7 +59,8 @@ const SHA256_K: [u32; 64] = [
 /// Full FIPS-180 SHA-256 over `data`, returning the 32-byte digest.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
 
     // Padding: append 0x80, then zeros until len % 64 == 56, then the 64-bit big-endian bit length.
@@ -666,7 +667,11 @@ impl Store {
                 }
             }
         }
-        out.sort_by(|a, b| a.t_valid.cmp(&b.t_valid).then(a.t_created.cmp(&b.t_created)));
+        out.sort_by(|a, b| {
+            a.t_valid
+                .cmp(&b.t_valid)
+                .then(a.t_created.cmp(&b.t_created))
+        });
         out
     }
 
@@ -815,7 +820,10 @@ impl Store {
                 }
                 .id();
                 if recomputed != r.id {
-                    return Err(format!("id mismatch: stored {} recomputed {}", r.id, recomputed));
+                    return Err(format!(
+                        "id mismatch: stored {} recomputed {}",
+                        r.id, recomputed
+                    ));
                 }
                 self.bump_clock(r.t_created);
                 let idx = self.rows.len();
@@ -866,7 +874,10 @@ impl Store {
             let expected = expected.trim();
             let got = to_hex(&sha256(doc.as_bytes()));
             if !expected.is_empty() && expected != got {
-                return Err(format!("sidecar mismatch: expected {} got {}", expected, got));
+                return Err(format!(
+                    "sidecar mismatch: expected {} got {}",
+                    expected, got
+                ));
             }
         }
         Store::from_hbp(&doc)
@@ -1109,7 +1120,8 @@ mod tests {
         }
 
         let s2 = Store::from_hbp(&doc).expect("replay must succeed");
-        s2.verify().expect("replayed store must self-verify (I2/I3/I4)");
+        s2.verify()
+            .expect("replayed store must self-verify (I2/I3/I4)");
         assert_eq!(s2.row_count(), s.row_count());
 
         // The injection-laden object round-tripped byte-for-byte.
@@ -1128,7 +1140,10 @@ mod tests {
         assert!(doc.contains("obj=v1"));
         doc = doc.replace("obj=v1", "obj=v2");
         // from_hbp recomputes the id (I4) and rejects the forged row.
-        assert!(Store::from_hbp(&doc).is_err(), "tampered log must not replay clean");
+        assert!(
+            Store::from_hbp(&doc).is_err(),
+            "tampered log must not replay clean"
+        );
     }
 
     #[test]
@@ -1141,8 +1156,14 @@ mod tests {
         };
         assert!(!s.invalidate(id, 5), "t_invalid < t_valid must be rejected");
         assert!(s.invalidate(id, 20), "valid close must succeed");
-        assert!(!s.invalidate(id, 30), "re-closing a closed edge must be rejected");
-        assert!(s.current("a", "b").is_empty(), "closed edge is no longer current");
+        assert!(
+            !s.invalidate(id, 30),
+            "re-closing a closed edge must be rejected"
+        );
+        assert!(
+            s.current("a", "b").is_empty(),
+            "closed edge is no longer current"
+        );
         s.verify().unwrap();
     }
 }

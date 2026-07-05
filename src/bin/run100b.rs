@@ -13,14 +13,14 @@
 //! geniusHits 5,500,447 / mistakeHits 2,202,884 per 1e11  ->  ~1 genius / 18181,
 //! ~1 mistake / 45400.
 
-use std::time::Instant;
 use asolaria_agent_memory::hopfield_recall::HopfieldMemory;
+use std::time::Instant;
 
 const TARGET: u64 = 100_000_000_000; // 1e11 = 100 billion PID space
-const GC_EVERY: u64 = 2000;          // flow-not-pile-up gulp threshold (SPEC canon)
-const GENIUS_MOD: u64 = 18181;       // ~5.5M / 1e11
-const MISTAKE_MOD: u64 = 45400;      // ~2.2M / 1e11
-const RUN_SECS: f64 = 12.0;          // measured window; extrapolate to TARGET
+const GC_EVERY: u64 = 2000; // flow-not-pile-up gulp threshold (SPEC canon)
+const GENIUS_MOD: u64 = 18181; // ~5.5M / 1e11
+const MISTAKE_MOD: u64 = 45400; // ~2.2M / 1e11
+const RUN_SECS: f64 = 12.0; // measured window; extrapolate to TARGET
 
 // fast formula-derived PID (splitmix64) — the 8-byte/3-byte spinner, not sha256 (100B needs speed)
 #[inline(always)]
@@ -39,14 +39,25 @@ fn main() {
     println!("=== warm-up ramp (gulp@{}) ===", GC_EVERY);
     for &n in &[1u64, 10, 100, 1000, 10000] {
         let t = Instant::now();
-        let mut carried = 0u64; let mut gulps = 0u64;
+        let mut carried = 0u64;
+        let mut gulps = 0u64;
         for i in 0..n {
             let _ = pid_spin(seed, i);
             carried += 1;
-            if carried >= GC_EVERY { gulps += 1; carried = 0; }
+            if carried >= GC_EVERY {
+                gulps += 1;
+                carried = 0;
+            }
         }
-        if carried > 0 { gulps += 1; }
-        println!("  n={:>6}  {:>7.1}us  gulps={}", n, t.elapsed().as_secs_f64() * 1e6, gulps);
+        if carried > 0 {
+            gulps += 1;
+        }
+        println!(
+            "  n={:>6}  {:>7.1}us  gulps={}",
+            n,
+            t.elapsed().as_secs_f64() * 1e6,
+            gulps
+        );
     }
 
     // --- the big run: stream logical actors, score, gulp, mint hits ---
@@ -82,12 +93,17 @@ fn main() {
             }
             // else neutral -> gulped, never stored
             carried += 1;
-            if carried >= GC_EVERY { gulps += 1; carried = 0; } // GC gulp (flow-not-pile-up)
+            if carried >= GC_EVERY {
+                gulps += 1;
+                carried = 0;
+            } // GC gulp (flow-not-pile-up)
             i += 1;
             processed += 1;
         }
         let _ = RUN_SECS;
-        if processed >= TARGET { break 'run; }  // FULL 100B — measured, not extrapolated
+        if processed >= TARGET {
+            break 'run;
+        } // FULL 100B — measured, not extrapolated
     }
     let secs = t0.elapsed().as_secs_f64();
     let rate = processed as f64 / secs;
@@ -98,13 +114,25 @@ fn main() {
     if minted_patterns > 0 {
         // rebuild the first genius pattern, mask half of it, ask the Hopfield to reconstruct
         let p = {
-            let mut first = 0u64; let mut j = 0u64;
-            loop { let q = pid_spin(seed, j); if q % GENIUS_MOD == 0 { first = q; break; } j += 1; }
+            let mut first = 0u64;
+            let mut j = 0u64;
+            loop {
+                let q = pid_spin(seed, j);
+                if q % GENIUS_MOD == 0 {
+                    first = q;
+                    break;
+                }
+                j += 1;
+            }
             first
         };
         let mut cue = [0f32; 16];
         for k in 0..16 {
-            cue[k] = if k < 8 { (((p >> (k * 4)) & 0xF) as f32) - 7.5 } else { 0.0 };
+            cue[k] = if k < 8 {
+                (((p >> (k * 4)) & 0xF) as f32) - 7.5
+            } else {
+                0.0
+            };
         }
         if let Some(r) = brain.recall(&cue, 8.0) {
             recall_conf = r.confidence;
@@ -114,17 +142,35 @@ fn main() {
 
     // --- extrapolate the measured rate to the full 100B space ---
     let full_secs = TARGET as f64 / rate;
-    let ext_genius = (TARGET / GENIUS_MOD) as u64;   // ~5.5M
-    let ext_mistake = (TARGET / MISTAKE_MOD) as u64;  // ~2.2M
-    let ext_gulps = TARGET / GC_EVERY;                 // 5e7
+    let ext_genius = (TARGET / GENIUS_MOD) as u64; // ~5.5M
+    let ext_mistake = (TARGET / MISTAKE_MOD) as u64; // ~2.2M
+    let ext_gulps = TARGET / GC_EVERY; // 5e7
 
     println!("=== MEASURED (this run) ===");
-    println!("  processed={} in {:.2}s  rate={:.0}/s  ({:.2}M/s)", processed, secs, rate, rate / 1e6);
-    println!("  genius={}  mistake={}  gulps={}  minted_patterns={}", genius, mistake, gulps, minted_patterns);
-    println!("  brain(hopfield) recall from half-cue: ok={} confidence={:.3}", recalled_ok, recall_conf);
+    println!(
+        "  processed={} in {:.2}s  rate={:.0}/s  ({:.2}M/s)",
+        processed,
+        secs,
+        rate,
+        rate / 1e6
+    );
+    println!(
+        "  genius={}  mistake={}  gulps={}  minted_patterns={}",
+        genius, mistake, gulps, minted_patterns
+    );
+    println!(
+        "  brain(hopfield) recall from half-cue: ok={} confidence={:.3}",
+        recalled_ok, recall_conf
+    );
     println!("=== EXTRAPOLATED to 1e11 (lazy PID space, historical rates) ===");
-    println!("  full_run_time={:.0}s ({:.1}h)  ext_genius={}  ext_mistake={}  ext_gulps={}",
-             full_secs, full_secs / 3600.0, ext_genius, ext_mistake, ext_gulps);
+    println!(
+        "  full_run_time={:.0}s ({:.1}h)  ext_genius={}  ext_mistake={}  ext_gulps={}",
+        full_secs,
+        full_secs / 3600.0,
+        ext_genius,
+        ext_mistake,
+        ext_gulps
+    );
 
     // --- HBP receipt (json=0) ---
     println!("RUN100BRECEIPT|processed={}|rate_per_s={:.0}|genius={}|mistake={}|gulps={}|minted_patterns={}|hopfield_recall_ok={}|ext_target={}|ext_full_secs={:.0}|ext_genius={}|ext_mistake={}|child_spawns=0|json=0",
