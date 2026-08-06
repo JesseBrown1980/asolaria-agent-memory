@@ -4,6 +4,21 @@ name: Rust 1.81 + clippy (operator toolchain rule)
 # This workflow replaces the previous rust-1.97-independent-verification.yml.
 # The 1.97 receipts remain in docs/ as HISTORICAL evidence of past runs; they
 # are not the toolchain of record.
+#
+# Every check is THREE-VALUED (AGENT-DISCIPLINE.md section 12):
+#   MEASURED_PASS | MEASURED_FAIL | NOT_MEASURED + a mandatory reason.
+# A check that could not run is NOT_MEASURED -- never red, and never a silent
+# green either: the reason is printed and carried into the receipt, and the
+# final step fails only on MEASURED_FAIL.
+#
+# Two faults in the previous version, both of which this fixes. Both were found
+# by the gate itself behaving exactly as section 12 says a gate must not:
+#   1. clippy reported MEASURED_FAIL on a repo with no crate at the root, so a
+#      repo that could not be measured was marked broken.
+#   2. the float grep printed "OK: zero float types" when src/ did not exist --
+#      a pass declared after scanning zero files. If every float in the corpus
+#      appeared tomorrow in a repo with no src/, that step would still be green.
+#      It could not fail, so it proved nothing.
 
 on:
   push:
@@ -23,40 +38,122 @@ jobs:
           rustc --version
           cargo clippy --version
 
-      - name: Clippy (deny warnings) — enforces integer/ternary discipline
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Assert no float types in sources (except declared float-witness files)
+      - name: Locate the crate
+        id: crate
         run: |
-          viol=0
-          for f in $(find . -name '*.rs' -not -path './target/*' -not -path './.git/*'); do
-            if head -40 "$f" | grep -qE 'FLOAT-(WITNESS|WIRE-BOUNDARY)-EXEMPT'; then
-              echo "exempt (declared, reason in file header): $f"; continue
+          set -u
+          if [ -f Cargo.toml ]; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+            echo "CRATE|status=MEASURED|path=./Cargo.toml"
+          else
+            found=$(find . -name Cargo.toml -not -path './target/*' -print -quit 2>/dev/null || true)
+            if [ -n "$found" ]; then
+              echo "found=1" >> "$GITHUB_OUTPUT"
+              echo "CRATE|status=MEASURED|path=$found"
+            else
+              echo "found=0" >> "$GITHUB_OUTPUT"
+              echo "CRATE|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY"
             fi
-            if grep -nE '\bf(32|64)\b' "$f"; then
-              echo "FAIL: float in $f — operator rule is integer/ternary only"; viol=1
-            fi
-          done
-          [ "$viol" -eq 0 ] && echo "OK: no float outside declared witness files"
-          # STAGED: this repo's numerical core (Hopfield / predictive-coding / recall) is still
-          # float and is tracked in FLOAT-CORE-PENDING.md with a design decision outstanding.
-          # The gate REPORTS the debt instead of hiding it; flip to `exit $viol` once converted.
-          echo "float sites still present: see FLOAT-CORE-PENDING.md (numerical core, staged)"
-          exit 0
+          fi
+
+      - name: Clippy (deny warnings) — enforces integer/ternary discipline
+        id: clippy
+        run: |
+          set -u
+          if [ "${{ steps.crate.outputs.found }}" != "1" ]; then
+            echo "CLIPPY|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY"
+            echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if cargo clippy --all-targets -- -D warnings; then
+            echo "CLIPPY|status=MEASURED_PASS"
+            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
+          else
+            echo "CLIPPY|status=MEASURED_FAIL"
+            echo "verdict=MEASURED_FAIL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assert no float types in sources
+        id: floats
+        run: |
+          set -u
+          # Count what was actually scanned. A grep that matched nothing because
+          # it looked at nothing is NOT a pass.
+          files=$(find . -name '*.rs' -not -path './target/*' | wc -l)
+          if [ "$files" -eq 0 ]; then
+            echo "FLOATS|status=NOT_MEASURED|reason=NO_RUST_SOURCES|scanned=0"
+            echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          hits=$(find . -name '*.rs' -not -path './target/*' -print0 \
+                 | xargs -0 grep -nE '\bf(32|64)\b' 2>/dev/null || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "FLOATS|status=MEASURED_FAIL|scanned=$files|reason=FLOAT_TYPE_PRESENT"
+            echo "verdict=MEASURED_FAIL" >> "$GITHUB_OUTPUT"
+          else
+            echo "FLOATS|status=MEASURED_PASS|scanned=$files|float_types=0"
+            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Tests
-        run: cargo test --all-targets -- --nocapture
+        id: tests
+        run: |
+          set -u
+          if [ "${{ steps.crate.outputs.found }}" != "1" ]; then
+            echo "TESTS|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY"
+            echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if cargo test --all-targets -- --nocapture; then
+            echo "TESTS|status=MEASURED_PASS"
+            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
+          else
+            echo "TESTS|status=MEASURED_FAIL"
+            echo "verdict=MEASURED_FAIL" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Receipt
         run: |
+          set -u
           {
             echo "toolchain_of_record=1.81.0"
             echo "rustc=$(rustc --version)"
             echo "clippy=$(cargo clippy --version)"
-            echo "float_types=0"
             echo "rule=integer_and_ternary_only_no_float"
+            echo "clippy_verdict=${{ steps.clippy.outputs.verdict }}"
+            echo "floats_verdict=${{ steps.floats.outputs.verdict }}"
+            echo "tests_verdict=${{ steps.tests.outputs.verdict }}"
           } > toolchain-receipt.txt
           cat toolchain-receipt.txt
+
+      - name: Gate — fail only on MEASURED_FAIL
+        run: |
+          set -u
+          fails=0
+          for v in "${{ steps.clippy.outputs.verdict }}" \
+                   "${{ steps.floats.outputs.verdict }}" \
+                   "${{ steps.tests.outputs.verdict }}"; do
+            [ "$v" = "MEASURED_FAIL" ] && fails=$((fails+1))
+          done
+          notm=0
+          for v in "${{ steps.clippy.outputs.verdict }}" \
+                   "${{ steps.floats.outputs.verdict }}" \
+                   "${{ steps.tests.outputs.verdict }}"; do
+            [ "$v" = "NOT_MEASURED" ] && notm=$((notm+1))
+          done
+          echo "GATE|measured_fail=$fails|not_measured=$notm"
+          if [ "$fails" -gt 0 ]; then
+            echo "GATE|result=RED|reason=a check ran and failed"
+            exit 1
+          fi
+          if [ "$notm" -eq 3 ]; then
+            # Nothing was measurable. That is a reportable state, not a pass to
+            # be waved through, and not a failure either. Say so loudly.
+            echo "GATE|result=NOT_MEASURED|reason=no check in this repository could run"
+            exit 0
+          fi
+          echo "GATE|result=GREEN|every check that could run, passed"
 
       - uses: actions/upload-artifact@v4
         with:
