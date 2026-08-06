@@ -44,45 +44,55 @@ jobs:
           rustc --version
           cargo clippy --version
 
-      - name: Locate the crate
+      - name: Enumerate EVERY crate — the repo is not one node
         id: crate
         run: |
           set -u
-          if [ -f Cargo.toml ]; then
-            echo "found=1" >> "$GITHUB_OUTPUT"
-            echo "manifest=./Cargo.toml" >> "$GITHUB_OUTPUT"
-            echo "CRATE|status=MEASURED|path=./Cargo.toml"
+          # SPHERICAL FIX. The previous version used
+          #     find . -name Cargo.toml -print -quit
+          # which returns the FIRST manifest and stops. A repository is not one
+          # crate; `contains` is an edge, and the flat view hid it:
+          #   Asolaria-helper       10 manifests -> 1 measured
+          #   asolaria-os            4 manifests -> 1 measured
+          #   intelligent-terminal   2 manifests -> the installer measured,
+          #                          all 58 .rs under tools/wta/ never linted
+          # A gate that measures one crate and prints MEASURED_PASS for the
+          # repository is the same failure as a grep that scanned zero files.
+          find . -name Cargo.toml -not -path './target/*' -not -path '*/target/*' \
+            | sort > crates.txt
+          n=$(wc -l < crates.txt)
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "CRATES|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY|count=0"
           else
-            found=$(find . -name Cargo.toml -not -path './target/*' -print -quit 2>/dev/null || true)
-            if [ -n "$found" ]; then
-              echo "found=1" >> "$GITHUB_OUTPUT"
-              echo "manifest=$found" >> "$GITHUB_OUTPUT"
-              echo "CRATE|status=MEASURED|path=$found"
-            else
-              echo "found=0" >> "$GITHUB_OUTPUT"
-              echo "CRATE|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY"
-            fi
+            echo "CRATES|status=MEASURED|count=$n"
+            while IFS= read -r m; do echo "CRATE|path=$m"; done < crates.txt
           fi
 
-      - name: Clippy (deny warnings) — enforces integer/ternary discipline
+      - name: Clippy over EVERY crate (deny warnings)
         id: clippy
         run: |
           set -u
-          if [ "${{ steps.crate.outputs.found }}" != "1" ]; then
+          if [ "${{ steps.crate.outputs.count }}" -eq 0 ]; then
             echo "CLIPPY|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY"
             echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # FIX: run against the manifest that step "crate" located. Without
-          # --manifest-path this ran at the repository root, so every repo whose
-          # crate lives in a subdirectory reported MEASURED_FAIL for "no
-          # Cargo.toml" -- a red gate that said nothing about clippy.
-          if cargo clippy --manifest-path "${{ steps.crate.outputs.manifest }}" --all-targets -- -D warnings; then
-            echo "CLIPPY|status=MEASURED_PASS"
-            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
-          else
+          pass=0; fail=0
+          while IFS= read -r m; do
+            if cargo clippy --manifest-path "$m" --all-targets -- -D warnings; then
+              echo "CLIPPY_CRATE|path=$m|status=MEASURED_PASS"; pass=$((pass+1))
+            else
+              echo "CLIPPY_CRATE|path=$m|status=MEASURED_FAIL"; fail=$((fail+1))
+            fi
+          done < crates.txt
+          echo "CLIPPY|crates=${{ steps.crate.outputs.count }}|pass=$pass|fail=$fail"
+          if [ "$fail" -gt 0 ]; then
             echo "CLIPPY|status=MEASURED_FAIL"
             echo "verdict=MEASURED_FAIL" >> "$GITHUB_OUTPUT"
+          else
+            echo "CLIPPY|status=MEASURED_PASS"
+            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Assert no float types in sources
@@ -111,7 +121,18 @@ jobs:
               echo "FLOAT_EXEMPT|file=$f|hits=$n|marker=$marker"
               exempt=$((exempt + n))
             else
-              grep -nE '\bf(32|64)\b' "$f" | sed "s|^|$f:|" >> /tmp/float-hits.txt
+              # FIX: strip // line comments before judging. A comment that SAYS
+              # "no f64" is a true statement about integer discipline, not a
+              # violation of it -- hp_mix.rs line 6 is exactly that, and the
+              # naive grep called it a float. Markers are read from the raw
+              # file above, so stripping here cannot hide an exemption.
+              # Strip ONLY whole-line comments (^ whitespace then // or //!).
+              # A trailing comment is left alone on purpose: sed cannot tell
+              # `let s = "http://x"; let y: f64 = 1.0;` from a real comment, and
+              # losing a line of code to a URL is the worse failure. Whole-line
+              # stripping cannot delete code, so it has no hole.
+              grep -nE '\bf(32|64)\b' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' \
+                | sed "s|^|$f:|" >> /tmp/float-hits.txt || true
             fi
           done < <(find . -name '*.rs' -not -path './target/*')
           unexempt=$(wc -l < /tmp/float-hits.txt)
@@ -124,21 +145,30 @@ jobs:
             echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Tests
+      - name: Tests over EVERY crate
         id: tests
         run: |
           set -u
-          if [ "${{ steps.crate.outputs.found }}" != "1" ]; then
+          if [ "${{ steps.crate.outputs.count }}" -eq 0 ]; then
             echo "TESTS|status=NOT_MEASURED|reason=NO_CRATE_IN_REPOSITORY"
             echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if cargo test --manifest-path "${{ steps.crate.outputs.manifest }}" --all-targets -- --nocapture; then
-            echo "TESTS|status=MEASURED_PASS"
-            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
-          else
+          pass=0; fail=0
+          while IFS= read -r m; do
+            if cargo test --manifest-path "$m" --all-targets -- --nocapture; then
+              echo "TEST_CRATE|path=$m|status=MEASURED_PASS"; pass=$((pass+1))
+            else
+              echo "TEST_CRATE|path=$m|status=MEASURED_FAIL"; fail=$((fail+1))
+            fi
+          done < crates.txt
+          echo "TESTS|crates=${{ steps.crate.outputs.count }}|pass=$pass|fail=$fail"
+          if [ "$fail" -gt 0 ]; then
             echo "TESTS|status=MEASURED_FAIL"
             echo "verdict=MEASURED_FAIL" >> "$GITHUB_OUTPUT"
+          else
+            echo "TESTS|status=MEASURED_PASS"
+            echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Receipt
@@ -149,7 +179,7 @@ jobs:
             echo "rustc=$(rustc --version)"
             echo "clippy=$(cargo clippy --version)"
             echo "rule=integer_and_ternary_only_no_float"
-            echo "manifest=${{ steps.crate.outputs.manifest }}"
+            echo "crates_measured=${{ steps.crate.outputs.count }}"
             echo "clippy_verdict=${{ steps.clippy.outputs.verdict }}"
             echo "floats_verdict=${{ steps.floats.outputs.verdict }}"
             echo "tests_verdict=${{ steps.tests.outputs.verdict }}"
