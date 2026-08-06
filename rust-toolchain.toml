@@ -1,0 +1,8 @@
+# OPERATOR RULE (Jesse Daniel Brown) — GLOBAL, ALL CRATES, NO EXCEPTIONS.
+# Rust 1.81 with clippy. Integer arithmetic only. Ternary (trits), never float.
+# This file is the rule in machine-readable form: any cargo invocation in this
+# repository uses 1.81.0 and has clippy available. Do not raise, do not drift.
+[toolchain]
+channel = "1.81.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
