@@ -20,7 +20,7 @@ const TARGET: u64 = 100_000_000_000; // 1e11 = 100 billion PID space
 const GC_EVERY: u64 = 2000; // flow-not-pile-up gulp threshold (SPEC canon)
 const GENIUS_MOD: u64 = 18181; // ~5.5M / 1e11
 const MISTAKE_MOD: u64 = 45400; // ~2.2M / 1e11
-const RUN_SECS: f64 = 12.0; // measured window; extrapolate to TARGET
+const RUN_MILLIS: u128 = 12_000; // measured window in ms (integer only); extrapolate to TARGET
 
 // fast formula-derived PID (splitmix64) — the 8-byte/3-byte spinner, not sha256 (100B needs speed)
 #[inline(always)]
@@ -53,9 +53,9 @@ fn main() {
             gulps += 1;
         }
         println!(
-            "  n={:>6}  {:>7.1}us  gulps={}",
+            "  n={:>6}  {:>7}us  gulps={}",
             n,
-            t.elapsed().as_secs_f64() * 1e6,
+            t.elapsed().as_micros(),
             gulps
         );
     }
@@ -100,13 +100,14 @@ fn main() {
             i += 1;
             processed += 1;
         }
-        let _ = RUN_SECS;
+        let _ = RUN_MILLIS;
         if processed >= TARGET {
             break 'run;
         } // FULL 100B — measured, not extrapolated
     }
-    let secs = t0.elapsed().as_secs_f64();
-    let rate = processed as f64 / secs;
+    // integer only: milliseconds elapsed, and rate as items per second (floor)
+    let millis = t0.elapsed().as_millis().max(1);
+    let rate_per_sec: u128 = (processed as u128 * 1000) / millis;
 
     // --- brain-research proof: recall a genius pattern from a partial cue ---
     let mut recalled_ok = false;
@@ -141,18 +142,22 @@ fn main() {
     }
 
     // --- extrapolate the measured rate to the full 100B space ---
-    let full_secs = TARGET as f64 / rate;
+    // extrapolated seconds (floor), integer only
+    let full_secs: u128 = if rate_per_sec > 0 { TARGET as u128 / rate_per_sec } else { 0 };
     let ext_genius = (TARGET / GENIUS_MOD) as u64; // ~5.5M
     let ext_mistake = (TARGET / MISTAKE_MOD) as u64; // ~2.2M
     let ext_gulps = TARGET / GC_EVERY; // 5e7
 
     println!("=== MEASURED (this run) ===");
+    // integer-only report: seconds to 2 dp from milliseconds, rate/s, and rate in M/s to 2 dp
     println!(
-        "  processed={} in {:.2}s  rate={:.0}/s  ({:.2}M/s)",
+        "  processed={} in {}.{:02}s  rate={}/s  ({}.{:02}M/s)",
         processed,
-        secs,
-        rate,
-        rate / 1e6
+        millis / 1000,
+        (millis % 1000) / 10,
+        rate_per_sec,
+        rate_per_sec / 1_000_000,
+        (rate_per_sec % 1_000_000) / 10_000
     );
     println!(
         "  genius={}  mistake={}  gulps={}  minted_patterns={}",
@@ -164,9 +169,10 @@ fn main() {
     );
     println!("=== EXTRAPOLATED to 1e11 (lazy PID space, historical rates) ===");
     println!(
-        "  full_run_time={:.0}s ({:.1}h)  ext_genius={}  ext_mistake={}  ext_gulps={}",
+        "  full_run_time={}s ({}.{}h)  ext_genius={}  ext_mistake={}  ext_gulps={}",
         full_secs,
-        full_secs / 3600.0,
+        full_secs / 3600,
+        (full_secs % 3600) * 10 / 3600,
         ext_genius,
         ext_mistake,
         ext_gulps
