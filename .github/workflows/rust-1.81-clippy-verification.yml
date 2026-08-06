@@ -28,6 +28,12 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      # FIX: RUSTUP_TOOLCHAIN outranks BOTH a directory override and any nested
+      # rust-toolchain.toml. intelligent-terminal carries a nested
+      # channel = "ms-prod-1.93" (third-party, MSRustup-resolved) that would
+      # otherwise decide the toolchain for every crate under tools/wta/.
+      RUSTUP_TOOLCHAIN: "1.81.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -44,11 +50,13 @@ jobs:
           set -u
           if [ -f Cargo.toml ]; then
             echo "found=1" >> "$GITHUB_OUTPUT"
+            echo "manifest=./Cargo.toml" >> "$GITHUB_OUTPUT"
             echo "CRATE|status=MEASURED|path=./Cargo.toml"
           else
             found=$(find . -name Cargo.toml -not -path './target/*' -print -quit 2>/dev/null || true)
             if [ -n "$found" ]; then
               echo "found=1" >> "$GITHUB_OUTPUT"
+              echo "manifest=$found" >> "$GITHUB_OUTPUT"
               echo "CRATE|status=MEASURED|path=$found"
             else
               echo "found=0" >> "$GITHUB_OUTPUT"
@@ -65,7 +73,11 @@ jobs:
             echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if cargo clippy --all-targets -- -D warnings; then
+          # FIX: run against the manifest that step "crate" located. Without
+          # --manifest-path this ran at the repository root, so every repo whose
+          # crate lives in a subdirectory reported MEASURED_FAIL for "no
+          # Cargo.toml" -- a red gate that said nothing about clippy.
+          if cargo clippy --manifest-path "${{ steps.crate.outputs.manifest }}" --all-targets -- -D warnings; then
             echo "CLIPPY|status=MEASURED_PASS"
             echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
           else
@@ -85,14 +97,30 @@ jobs:
             echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          hits=$(find . -name '*.rs' -not -path './target/*' -print0 \
-                 | xargs -0 grep -nE '\bf(32|64)\b' 2>/dev/null || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "FLOATS|status=MEASURED_FAIL|scanned=$files|reason=FLOAT_TYPE_PRESENT"
+          # FIX: the two declared exemptions are honoured here, and every
+          # exempt file is PRINTED BY NAME so nothing hides behind a marker.
+          # A marker only counts in the first 5 lines of the file -- a
+          # file-level declaration, not a comment buried next to a float.
+          exempt=0
+          : > /tmp/float-hits.txt
+          while IFS= read -r f; do
+            n=$(grep -cE '\bf(32|64)\b' "$f" || true)
+            [ "${n:-0}" -eq 0 ] && continue
+            if head -5 "$f" | grep -q 'FLOAT-WITNESS-EXEMPT\|FLOAT-WIRE-BOUNDARY-EXEMPT'; then
+              marker=$(head -5 "$f" | grep -o 'FLOAT-WITNESS-EXEMPT\|FLOAT-WIRE-BOUNDARY-EXEMPT' | head -1)
+              echo "FLOAT_EXEMPT|file=$f|hits=$n|marker=$marker"
+              exempt=$((exempt + n))
+            else
+              grep -nE '\bf(32|64)\b' "$f" | sed "s|^|$f:|" >> /tmp/float-hits.txt
+            fi
+          done < <(find . -name '*.rs' -not -path './target/*')
+          unexempt=$(wc -l < /tmp/float-hits.txt)
+          if [ "$unexempt" -gt 0 ]; then
+            cat /tmp/float-hits.txt
+            echo "FLOATS|status=MEASURED_FAIL|scanned=$files|exempt=$exempt|unexempt=$unexempt|reason=FLOAT_TYPE_PRESENT"
             echo "verdict=MEASURED_FAIL" >> "$GITHUB_OUTPUT"
           else
-            echo "FLOATS|status=MEASURED_PASS|scanned=$files|float_types=0"
+            echo "FLOATS|status=MEASURED_PASS|scanned=$files|exempt=$exempt|unexempt=0"
             echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
           fi
 
@@ -105,7 +133,7 @@ jobs:
             echo "verdict=NOT_MEASURED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if cargo test --all-targets -- --nocapture; then
+          if cargo test --manifest-path "${{ steps.crate.outputs.manifest }}" --all-targets -- --nocapture; then
             echo "TESTS|status=MEASURED_PASS"
             echo "verdict=MEASURED_PASS" >> "$GITHUB_OUTPUT"
           else
@@ -121,6 +149,7 @@ jobs:
             echo "rustc=$(rustc --version)"
             echo "clippy=$(cargo clippy --version)"
             echo "rule=integer_and_ternary_only_no_float"
+            echo "manifest=${{ steps.crate.outputs.manifest }}"
             echo "clippy_verdict=${{ steps.clippy.outputs.verdict }}"
             echo "floats_verdict=${{ steps.floats.outputs.verdict }}"
             echo "tests_verdict=${{ steps.tests.outputs.verdict }}"
