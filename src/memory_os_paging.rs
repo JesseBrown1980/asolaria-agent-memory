@@ -18,7 +18,7 @@
 //!      the queue tail with a fresh arrival seq, which may itself evict other
 //!      cold items — exactly like OS demand paging. The controller decides when
 //!      to page, not the storage layer.
-//!   4. **HYSTERESIS.** Evict from `tau_hi` down to `tau_lo` (defaults 0.9/0.7):
+//!   4. **HYSTERESIS.** Evict from `tau_hi` down to `tau_lo` (defaults 900/700 per-mille = 0.9/0.7):
 //!      each flush frees `>= (tau_hi - tau_lo) * B` bytes, giving amortized
 //!      `O(1)` evictions per insert and killing thrash.
 //!
@@ -287,8 +287,10 @@ struct Digest {
 /// moves the oldest hot bytes to cold and leaves a chained digest pointer.
 pub struct MemoryPager {
     budget: usize,
-    tau_hi: f64,
-    tau_lo: f64,
+    /// Watermarks in PER-MILLE of `budget` (integer only; 900 = 0.9). Integer arithmetic keeps
+    /// `hi_bytes`/`lo_bytes` exact for every budget, with no platform-dependent rounding.
+    tau_hi_permille: u16,
+    tau_lo_permille: u16,
 
     hot: VecDeque<HotEntry>, // arrival order (front = oldest)
     hot_bytes: HashMap<Sha16, Vec<u8>>,
@@ -312,21 +314,24 @@ impl MemoryPager {
     /// New pager with default hysteresis watermarks (0.9 high / 0.7 low).
     /// `budget` is the hot-set byte ceiling; it is clamped to at least 1.
     pub fn new(budget: usize) -> MemoryPager {
-        MemoryPager::with_watermarks(budget, 0.9, 0.7)
+        MemoryPager::with_watermarks(budget, 900, 700)
     }
 
-    /// New pager with explicit watermarks. Requires `0 < tau_lo < tau_hi <= 1`.
-    /// Invalid watermarks fall back to the 0.9/0.7 defaults.
-    pub fn with_watermarks(budget: usize, tau_hi: f64, tau_lo: f64) -> MemoryPager {
-        let (hi, lo) = if tau_lo > 0.0 && tau_lo < tau_hi && tau_hi <= 1.0 {
-            (tau_hi, tau_lo)
+    /// New pager with explicit watermarks, in PER-MILLE. Requires `0 < lo < hi <= 1000`.
+    /// Invalid watermarks fall back to the 900/700 defaults (0.9 / 0.7).
+    pub fn with_watermarks(budget: usize, tau_hi_permille: u16, tau_lo_permille: u16) -> MemoryPager {
+        let (hi, lo) = if tau_lo_permille > 0
+            && tau_lo_permille < tau_hi_permille
+            && tau_hi_permille <= 1000
+        {
+            (tau_hi_permille, tau_lo_permille)
         } else {
-            (0.9, 0.7)
+            (900, 700)
         };
         MemoryPager {
             budget: budget.max(1),
-            tau_hi: hi,
-            tau_lo: lo,
+            tau_hi_permille: hi,
+            tau_lo_permille: lo,
             hot: VecDeque::new(),
             hot_bytes: HashMap::new(),
             store: HashMap::new(),
@@ -343,18 +348,19 @@ impl MemoryPager {
 
     // ---- watermark helpers ----
     #[inline]
-    fn hi_bytes(&self) -> f64 {
-        self.tau_hi * self.budget as f64
+    fn hi_bytes(&self) -> usize {
+        // exact: floor(budget * permille / 1000); u128 intermediate cannot overflow
+        ((self.budget as u128 * self.tau_hi_permille as u128) / 1000) as usize
     }
     #[inline]
-    fn lo_bytes(&self) -> f64 {
-        self.tau_lo * self.budget as f64
+    fn lo_bytes(&self) -> usize {
+        ((self.budget as u128 * self.tau_lo_permille as u128) / 1000) as usize
     }
     /// An item is hot-eligible iff it can fit under the low watermark; this is
     /// what guarantees a flush can always drain to `tau_lo` without livelock.
     #[inline]
     fn hot_eligible(&self, len: usize) -> bool {
-        len <= self.budget && (len as f64) <= self.lo_bytes()
+        len <= self.budget && len <= self.lo_bytes()
     }
 
     /// Insert bytes. Returns the content address and how it was handled.
@@ -492,14 +498,14 @@ impl MemoryPager {
     /// high watermark is exceeded. `exempt` (the just-touched id) is never its
     /// own victim. Each flush that evicts anything leaves one chained digest.
     fn maybe_flush(&mut self, exempt: Option<Sha16>) {
-        if (self.usage as f64) <= self.hi_bytes() {
+        if self.usage <= self.hi_bytes() {
             return;
         }
         let target = self.lo_bytes();
         let mut evicted: Vec<Sha16> = Vec::new();
         let mut count = 0usize;
 
-        while (self.usage as f64) > target && count < self.max_evict_per_op {
+        while self.usage > target && count < self.max_evict_per_op {
             let front_id = match self.hot.front() {
                 Some(e) => e.id,
                 None => break,
@@ -763,7 +769,7 @@ mod tests {
 
         // Hot set is bounded: usage never exceeds the high watermark.
         assert!(
-            p.hot_usage() as f64 <= p.hi_bytes(),
+            p.hot_usage() <= p.hi_bytes(),
             "hot usage {} must stay <= hi watermark {}",
             p.hot_usage(),
             p.hi_bytes()
